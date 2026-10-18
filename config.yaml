@@ -13,20 +13,28 @@ app:
 profiles:
   dev:                              # your PC: 16 GB RAM, CPU only
     model_name: "Qwen3.5 4B"
-    hf_repo: ""                     # filled in Step 2 after checking Hugging Face
+    hf_repo: "unsloth/Qwen3.5-4B-GGUF"
     quant: "Q4_K_M"
+    model_path: ""                  # if the download is blocked: path to a .gguf file (used instead of hf_repo)
     ctx: 8192
-    threads: 6                      # set to your number of physical cores
+    threads: 6                      # set to your number of PHYSICAL cores
     max_steps: 15
+    max_tokens: 1024                # longest single LLM answer
+    cache_ram_mib: 1024             # caps llama-server's prompt cache in RAM (its default is 8192)
+    extra_args: []                  # extra llama-server flags
     host: "127.0.0.1"               # only this PC can open the dashboard
     open_browser: true
 
   lab:                              # lab PC: final demo
     model_name: "Qwen3-Coder 30B-A3B Instruct"
-    hf_repo: ""                     # filled in Step 2 / B7
+    hf_repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
     quant: "Q4_K_M"
+    model_path: ""
     ctx: 16384
     threads: 8
     max_steps: 25
+    max_tokens: 2048
+    cache_ram_mib: null             # null = keep llama-server's default
+    extra_args: []                  # GPU flags go here after the lab PC check, e.g. ["-ngl", "all"]
     host: "0.0.0.0"                 # lets a second PC on the network open the dashboard
     open_browser: false

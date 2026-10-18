@@ -2,6 +2,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -16,9 +17,13 @@ class Settings:
     model_name: str
     hf_repo: str
     quant: str
+    model_path: str
     ctx: int
     threads: int
     max_steps: int
+    max_tokens: int
+    cache_ram_mib: Optional[int]
+    extra_args: tuple
     host: str
     port: int
     open_browser: bool
@@ -43,16 +48,21 @@ def load_settings() -> Settings:
         raise ValueError(f"PROFILE={profile!r} is not defined in config.yaml. Use one of: {list(profiles)}")
     p = profiles[profile]
     paths = cfg["app"]["paths"]
+    cache_ram = p.get("cache_ram_mib")
 
     settings = Settings(
         profile=profile,
         llm_url=os.getenv("LLM_URL", "http://127.0.0.1:8081").rstrip("/"),
         model_name=p["model_name"],
-        hf_repo=p.get("hf_repo", ""),
+        hf_repo=p.get("hf_repo") or "",
         quant=p["quant"],
+        model_path=p.get("model_path") or "",
         ctx=int(p["ctx"]),
         threads=int(p["threads"]),
         max_steps=int(p["max_steps"]),
+        max_tokens=int(p.get("max_tokens", 1024)),
+        cache_ram_mib=int(cache_ram) if cache_ram is not None else None,
+        extra_args=tuple(str(a) for a in (p.get("extra_args") or [])),
         host=p["host"],
         port=int(cfg["app"]["port"]),
         open_browser=bool(p["open_browser"]),

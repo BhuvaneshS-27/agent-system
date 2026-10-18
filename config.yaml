@@ -1,0 +1,32 @@
+# Non-secret settings. Secrets (API keys) live only in .env.
+# Pick the profile with PROFILE=dev or PROFILE=lab in .env.
+
+app:
+  title: "Agent System"
+  port: 8080
+  paths:
+    workspace: workspace
+    outputs: outputs
+    runs: runs
+    cache: cache
+
+profiles:
+  dev:                              # your PC: 16 GB RAM, CPU only
+    model_name: "Qwen3.5 4B"
+    hf_repo: ""                     # filled in Step 2 after checking Hugging Face
+    quant: "Q4_K_M"
+    ctx: 8192
+    threads: 6                      # set to your number of physical cores
+    max_steps: 15
+    host: "127.0.0.1"               # only this PC can open the dashboard
+    open_browser: true
+
+  lab:                              # lab PC: final demo
+    model_name: "Qwen3-Coder 30B-A3B Instruct"
+    hf_repo: ""                     # filled in Step 2 / B7
+    quant: "Q4_K_M"
+    ctx: 16384
+    threads: 8
+    max_steps: 25
+    host: "0.0.0.0"                 # lets a second PC on the network open the dashboard
+    open_browser: false

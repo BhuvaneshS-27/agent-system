@@ -1,0 +1,15 @@
+@'
+.env
+.venv/
+workspace/
+outputs/
+runs/
+cache/
+__pycache__/
+.pytest_cache/
+.nicegui/
+*.mp4
+*.log
+*.gguf
+assets/voices/
+'@ | Set-Content -Encoding ascii .gitignore

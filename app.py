@@ -3,10 +3,12 @@ import time
 
 from nicegui import ui
 
+from agents.coding.approvals import Approvals
 from core.bus import EventBus
 from core.context import AppContext
 from core.orchestrator import Orchestrator
 from core.settings import load_settings
+from research.web import WebTools
 from ui.agent_tab import build_agent_tab
 from ui.common import EventPump, build_header
 from ui.research_tab import build_research_tab
@@ -18,7 +20,8 @@ from ui.video_tab import build_video_tab
 
 settings = load_settings()
 bus = EventBus(settings.runs_dir / f"session-{time.strftime('%Y%m%d-%H%M%S')}" / "events.jsonl")
-ctx = AppContext(settings=settings, bus=bus, orchestrator=Orchestrator(bus))
+ctx = AppContext(settings=settings, bus=bus, orchestrator=Orchestrator(bus), approvals=Approvals(bus),
+                 web=WebTools(bus, settings.cache_dir))
 bus.emit("app_started", profile=settings.profile, model=settings.model_name, ctx=settings.ctx)
 
 

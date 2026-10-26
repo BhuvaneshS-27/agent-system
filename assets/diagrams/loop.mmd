@@ -1,0 +1,11 @@
+flowchart LR
+  P[Plan] --> A[Ask model]
+  A --> G{Valid?}
+  G -- no, retry --> A
+  G -- yes --> T[Run tool]
+  T --> O[Observe]
+  O --> R[Reflect]
+  R --> F{Done?}
+  F -- no --> C[Compact]
+  C --> A
+  F -- yes --> E([Finish])

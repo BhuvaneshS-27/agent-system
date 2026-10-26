@@ -1,0 +1,11 @@
+flowchart LR
+  OR[Orchestrator] --> J1[Coding job]
+  OR --> J2[Image job]
+  OR --> J3[Video job]
+  J1 --> LM[Local model]
+  J2 --> P1[Cloudflare FLUX]
+  P1 -- fails --> P2[Pollinations]
+  J3 --> TT[Kokoro and ffmpeg]
+  J1 --> BUS[(Event bus)]
+  J2 --> BUS
+  J3 --> BUS

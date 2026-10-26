@@ -1,0 +1,7 @@
+flowchart LR
+  C[Agent wants a shell command] --> B{On blocklist?}
+  B -- yes --> X[Blocked and logged]
+  B -- no --> Q[Ask you in the dashboard]
+  Q -- Approve --> S[Run in sandbox folder]
+  Q -- Deny --> D[Denied and logged]
+  Q -- 300 s no answer --> D

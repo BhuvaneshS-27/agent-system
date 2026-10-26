@@ -3,8 +3,13 @@
 One place for: the health check, JSON-constrained action calls, retries, and logging of
 seconds and token usage. The agent never needs to know HTTP details.
 """
+import http.client
+import json
+import socket
+import threading
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_fixed
@@ -18,6 +23,11 @@ class LLMError(RuntimeError):
 
 class LLMUnavailable(LLMError):
     """The server is not reachable or is still loading the model. Worth retrying."""
+
+
+class LLMStopped(Exception):
+    """The user pressed Stop while a model call was running. Deliberately NOT an LLMError,
+    so the 'planning failed, plan as you go' fallbacks do not swallow it."""
 
 
 @dataclass
@@ -37,6 +47,7 @@ class ActionResult:
     raw: str            # the exact JSON text; put this in the history as the assistant message
     reply: LLMReply
     attempts: int       # 1 = valid on the first try
+    args: dict = None   # the arguments after validate() cleaned them (else action.args)
 
 
 def _server_message(r: requests.Response) -> str:
@@ -47,8 +58,10 @@ def _server_message(r: requests.Response) -> str:
 
 
 class LLMClient:
-    def __init__(self, settings, bus=None, retry_wait=None, json_retries: int = 2, read_timeout: int = 900):
+    def __init__(self, settings, bus=None, retry_wait=None, json_retries: int = 2, read_timeout: int = 900,
+                 stop_event=None):
         self.base = settings.llm_url
+        self.stop_event = stop_event        # when set, calls are streamed and can be cancelled
         self.max_tokens = settings.max_tokens
         self.bus = bus
         self.json_retries = json_retries
@@ -89,6 +102,98 @@ class LLMClient:
             raise LLMError(f"llama-server HTTP {r.status_code}: {_server_message(r)}")
         return r.json()
 
+    # ------------------------------------------------------------ streaming http
+    def _post_stream(self, body: dict) -> dict:
+        """Streaming call that the Stop button can cancel, even while the server is still
+        reading the prompt (before the first token). The HTTP request runs in a helper thread;
+        this thread waits and watches stop_event. On Stop it closes the socket, which also
+        tells llama-server the client is gone. Returns the same dict shape as a normal answer."""
+        u = urlparse(self.base)
+        conn_cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        box = {"conn": None, "abort": False, "exc": None, "content": [], "reasoning": 0,
+               "finish": "", "usage": {}, "timings": {}}
+        done = threading.Event()
+        payload = json.dumps({**body, "stream": True, "stream_options": {"include_usage": True}}).encode()
+
+        def worker() -> None:
+            try:
+                conn = conn_cls(u.hostname, u.port or (443 if u.scheme == "https" else 80), timeout=self.timeout[0])
+                box["conn"] = conn
+                conn.connect()
+                conn.sock.settimeout(self.timeout[1])
+                conn.request("POST", f"{u.path.rstrip('/')}/v1/chat/completions", payload,
+                             {"Content-Type": "application/json", "Accept": "text/event-stream"})
+                resp = conn.getresponse()
+                if resp.status != 200:
+                    raw = resp.read(2000).decode("utf-8", "replace")
+                    try:
+                        raw = str(json.loads(raw)["error"]["message"])
+                    except Exception:
+                        pass
+                    box["exc"] = (LLMUnavailable("llama-server is still loading the model")
+                                  if resp.status == 503 else
+                                  LLMError(f"llama-server HTTP {resp.status}: {raw[:300]}"))
+                    return
+                while not box["abort"]:
+                    line = resp.readline()
+                    if not line:
+                        break
+                    line = line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue                                    # blank lines and ': ping' comments
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    if chunk.get("error"):
+                        raise LLMError(f"llama-server error: {str(chunk['error'])[:300]}")
+                    for ch in chunk.get("choices") or []:           # the usage chunk has no choices
+                        delta = ch.get("delta") or {}
+                        if delta.get("content"):
+                            box["content"].append(delta["content"])
+                        box["reasoning"] += len(delta.get("reasoning_content") or "")
+                        if ch.get("finish_reason"):
+                            box["finish"] = ch["finish_reason"]
+                    if chunk.get("usage"):
+                        box["usage"] = chunk["usage"]
+                    if chunk.get("timings"):
+                        box["timings"] = chunk["timings"]
+            except socket.timeout:
+                box["exc"] = LLMError(f"no answer within {self.timeout[1]} s")
+            except (ConnectionError, OSError, http.client.HTTPException) as e:
+                if not box["abort"]:
+                    box["exc"] = LLMUnavailable(f"cannot reach llama-server at {self.base}. Is it running? ({type(e).__name__})")
+            except Exception as e:                                  # includes our LLMError above
+                box["exc"] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=worker, name="llm-stream", daemon=True).start()
+        while not done.wait(0.1):
+            if self.stop_event is not None and self.stop_event.is_set():
+                box["abort"] = True
+                conn = box["conn"]
+                if conn is not None and conn.sock is not None:
+                    try:
+                        conn.sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                raise LLMStopped("Stop pressed during a model call")
+        if box["exc"] is not None:
+            raise box["exc"]
+        if not box["finish"] and not box["content"]:
+            raise LLMUnavailable("llama-server closed the stream without an answer")
+        return {"choices": [{"message": {"content": "".join(box["content"])},
+                             "finish_reason": box["finish"] or "stop"}],
+                "usage": box["usage"], "timings": box["timings"], "reasoning_chars": box["reasoning"]}
+
     def _on_retry(self, state, tags) -> None:
         self._emit("retry", tags, what="llm_connect", attempt=state.attempt_number,
                    reason=str(state.outcome.exception()), wait_s=round(state.next_action.sleep, 1))
@@ -112,7 +217,7 @@ class LLMClient:
                                 before_sleep=lambda st: self._on_retry(st, tags)):
             with attempt:
                 t0 = time.time()
-                data = self._post(body)
+                data = self._post_stream(body) if self.stop_event is not None else self._post(body)
                 seconds = time.time() - t0
 
         try:
@@ -129,7 +234,7 @@ class LLMClient:
                 completion_tokens=completion,
                 seconds=round(seconds, 1),
                 tokens_per_second=round(float(tps), 1),
-                reasoning_chars=len(msg.get("reasoning_content") or ""),
+                reasoning_chars=int(data.get("reasoning_chars") or len(msg.get("reasoning_content") or "")),
             )
         except (KeyError, IndexError, TypeError, ValueError) as e:
             raise LLMError(f"unexpected answer from llama-server: {e!r}") from None
@@ -140,19 +245,21 @@ class LLMClient:
         return reply
 
     # ---------------------------------------------------------------- action
-    def action(self, messages: list, tags=None) -> ActionResult:
-        """Ask for one action. Invalid JSON is retried up to json_retries times, and the
-        problem is told to the model so it can correct itself."""
+    def action(self, messages: list, tags=None, schema=None, validate=None) -> ActionResult:
+        """Ask for one action. Invalid JSON, or arguments that validate(action) rejects with
+        a ValueError, are retried up to json_retries times, and the problem is told to the
+        model so it can correct itself. validate returns the cleaned arguments."""
         msgs = list(messages)
         problem = ""
         for attempt in range(1, self.json_retries + 2):
-            reply = self.chat(msgs, schema=ACTION_SCHEMA, tags=tags)
+            reply = self.chat(msgs, schema=schema or ACTION_SCHEMA, tags=tags)
             try:
                 if reply.finish_reason == "length":
                     raise ValueError(f"your answer was cut off after {reply.completion_tokens} tokens; "
                                      "write shorter code or split the work into smaller steps")
                 act = Action.model_validate_json(reply.content)
-                return ActionResult(action=act, raw=reply.content, reply=reply, attempts=attempt)
+                args = validate(act) if validate else act.args
+                return ActionResult(action=act, raw=reply.content, reply=reply, attempts=attempt, args=args)
             except ValueError as e:                 # pydantic's ValidationError is a ValueError
                 problem = " ".join(str(e).split())[:300]
                 self._emit("retry", tags, what="invalid_json", attempt=attempt, reason=problem)
@@ -160,4 +267,3 @@ class LLMClient:
                          {"role": "user", "content": f"Invalid action: {problem}. "
                                                      "Reply again with one valid JSON action."}]
         raise LLMError(f"the model gave no valid action after {self.json_retries + 1} tries: {problem}")
-    

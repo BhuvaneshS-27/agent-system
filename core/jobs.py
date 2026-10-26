@@ -8,6 +8,11 @@ from typing import Optional
 ACTIVE = {"queued", "running", "waiting_approval"}
 
 
+class JobFailed(Exception):
+    """Raised by an agent that ends without success (step budget used up, stuck in a loop).
+    The orchestrator shows the job as failed, with this message and no stack trace."""
+
+
 @dataclass
 class JobRecord:
     agent: str

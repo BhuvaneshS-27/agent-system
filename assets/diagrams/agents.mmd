@@ -1,0 +1,11 @@
+flowchart LR
+  U[Dashboard] --> OR[Orchestrator]
+  OR --> CA[Coding agent]
+  OR --> IA[Image agent]
+  OR --> VA[Video agent]
+  OR --> RA[Research agent]
+  CA --> BUS[(Event bus)]
+  IA --> BUS
+  VA --> BUS
+  RA --> BUS
+  BUS --> U
